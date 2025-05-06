@@ -9,7 +9,6 @@ function App() {
       <Router>
         <Routes>
           <Route path="/*" element={<CombinedChatApp/>}></Route>
-          {/* <Route path="/chat" element={<TeamChatPage />}></Route> */}
         </Routes>
       </Router>
     </div>

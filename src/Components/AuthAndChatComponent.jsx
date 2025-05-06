@@ -1,6 +1,40 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import '../Styles/styles.css';
 
+const formatTime = (timestamp) => {
+    if (!timestamp) return '';
+    try {
+        const date = new Date(timestamp);
+        if (isNaN(date.getTime())) {
+            return 'Invalid Date';
+        }
+        const hours = date.getHours().toString().padStart(2, '0');
+        const minutes = date.getMinutes().toString().padStart(2, '0');
+        return `${hours}:${minutes}`;
+    } catch (e) {
+        console.error("Error formatting time:", timestamp, e);
+        return 'Error';
+    }
+};
+
+const formatDateSeparator = (timestamp) => {
+    if (!timestamp) return '';
+    try {
+        const date = new Date(timestamp);
+        if (isNaN(date.getTime())) {
+            return 'Invalid Date';
+        }
+        const day = date.getDate().toString().padStart(2, '0');
+        const month = (date.getMonth() + 1).toString().padStart(2, '0');
+        const year = date.getFullYear();
+        return `${day}/${month}/${year}`;
+    } catch (e) {
+        console.error("Error formatting date separator:", timestamp, e);
+        return 'Error';
+    }
+};
+
+
 const CombinedChatApp = () => {
     const [isAuthenticated, setIsAuthenticated] = useState(false);
     const [isCheckingAuth, setIsCheckingAuth] = useState(true);
@@ -8,12 +42,15 @@ const CombinedChatApp = () => {
     const [password, setPassword] = useState("");
     const [authError, setAuthError] = useState("");
 
+    const [myUsername, setMyUsername] = useState("");
+
     const [messages, setMessages] = useState([]);
     const [newMessage, setNewMessage] = useState("");
     const [isConnected, setIsConnected] = useState(false);
     const [isLoadingMessages, setIsLoadingMessages] = useState(false);
 
     const ws = useRef(null);
+    const messagesEndRef = useRef(null);
 
     const host = window.location.hostname;
     const wsUrl = `ws://${host}:8080/websocket`;
@@ -22,8 +59,9 @@ const CombinedChatApp = () => {
         setIsCheckingAuth(true);
         setAuthError("");
         const userId = localStorage.getItem("user_id");
+        const storedUsername = localStorage.getItem("username");
 
-        if (userId) {
+        if (userId && storedUsername) {
             try {
                 const response = await fetch(`http://${host}:8080/api/exists`, {
                     method: "POST",
@@ -32,20 +70,33 @@ const CombinedChatApp = () => {
                 });
                 if (response.ok) {
                     const userExists = await response.json();
-                    setIsAuthenticated(userExists === true);
-                    if (!userExists) localStorage.removeItem("user_id");
+                    if (userExists === true) {
+                        setIsAuthenticated(true);
+                        setMyUsername(storedUsername);
+                    } else {
+                        localStorage.removeItem("user_id");
+                        localStorage.removeItem("username");
+                        setIsAuthenticated(false);
+                        setMyUsername("");
+                    }
                 } else {
                     localStorage.removeItem("user_id");
+                    localStorage.removeItem("username");
                     setIsAuthenticated(false);
-                    console.error("Auth check failed:", response.statusText);
+                    setMyUsername("");
                 }
             } catch (error) {
+                console.error("Error checking auth status:", error);
                 localStorage.removeItem("user_id");
+                localStorage.removeItem("username");
                 setIsAuthenticated(false);
-                console.error("Error during auth check:", error);
+                setMyUsername("");
             }
         } else {
             setIsAuthenticated(false);
+            setMyUsername("");
+            localStorage.removeItem("user_id");
+            localStorage.removeItem("username");
         }
         setIsCheckingAuth(false);
     }, [host]);
@@ -59,32 +110,45 @@ const CombinedChatApp = () => {
                 body: JSON.stringify({ username, password }),
             });
             if (response.ok) {
-                const userIdRaw = await response.text();
-                const userIdTrimmed = userIdRaw.startsWith('"') && userIdRaw.endsWith('"')
-                    ? userIdRaw.slice(1, -1)
-                    : userIdRaw;
-                if (userIdTrimmed) {
-                    localStorage.setItem("user_id", userIdTrimmed);
-                    setIsAuthenticated(true);
-                    setUsername("");
-                    setPassword("");
+                const responseText = await response.text();
+                const parts = responseText.split(';');
+                if (parts.length === 2) {
+                    const userId = parts[0].startsWith('"') && parts[0].endsWith('"') ? parts[0].slice(1, -1) : parts[0];
+                    const fetchedUsername = parts[1].startsWith('"') && parts[1].endsWith('"') ? parts[1].slice(1, -1) : parts[1];
+
+                    if (userId && fetchedUsername) {
+                        localStorage.setItem("user_id", userId);
+                        localStorage.setItem("username", fetchedUsername);
+                        setIsAuthenticated(true);
+                        setMyUsername(fetchedUsername);
+                        setUsername("");
+                        setPassword("");
+                    } else {
+                        setAuthError("Не удалось получить ID пользователя или имя пользователя от сервера.");
+                    }
                 } else {
-                    setAuthError("Не удалось получить ID пользователя от сервера.");
+                     setAuthError("Неожиданный формат ответа от сервера авторизации.");
                 }
             } else {
                 const errorText = await response.text();
                 setAuthError(`Ошибка авторизации: ${response.status} ${errorText || response.statusText}`);
-                console.error("Login failed:", response.statusText);
             }
         } catch (error) {
+            console.error("Login failed:", error);
             setAuthError("Ошибка сети при попытке входа.");
-            console.error("Error during login:", error);
         }
     };
 
     const handleLogout = () => {
         localStorage.removeItem('user_id');
+        localStorage.removeItem('username');
         setIsAuthenticated(false);
+        setMyUsername("");
+        if (ws.current) {
+            ws.current.close();
+            ws.current = null;
+        }
+        setMessages([]);
     };
 
     const fetchMessages = useCallback(async () => {
@@ -94,127 +158,166 @@ const CombinedChatApp = () => {
             if (response.ok) {
                 const historicalMessages = await response.json();
                 const formattedMessages = historicalMessages.map(msg => ({
-                    author: msg.sender,
+                    author: msg.username || 'Unknown',
                     text: msg.content,
-                    id: msg.id || `msg-${Date.now()}-${Math.random()}`
+                    senderId: msg.sender,
+                    id: msg.id || `msg-${Date.now()}-${Math.random()}`,
+                    status: 'delivered',
+                    timestamp: msg.timestamp
                 }));
                 setMessages(formattedMessages);
             } else {
-                console.error("Failed to fetch messages:", response.status, response.statusText);
                 setMessages([]);
             }
         } catch (error) {
-            console.error("Error fetching messages:", error);
+             console.error("Error fetching messages:", error);
             setMessages([]);
         } finally {
             setIsLoadingMessages(false);
         }
     }, [host]);
 
-
     const handleSendMessage = () => {
-        if (!newMessage.trim()) return;
+        const messageContent = newMessage.trim();
+        if (!messageContent) return;
 
         const userId = localStorage.getItem("user_id");
-        if (!userId) {
-            console.error("User ID not found for sending message. Logging out.");
+        const currentUsername = myUsername;
+
+        if (!userId || !currentUsername) {
+             console.error("User ID or username not available for sending.");
             handleLogout();
             return;
         }
 
-        if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+        const optimisticMessage = {
+            id: `optimistic-${userId}-${Date.now()}-${Math.random()}`,
+            author: currentUsername,
+            senderId: userId,
+            isOptimistic: true,
+            text: messageContent,
+            status: 'sending',
+            timestamp: new Date().toISOString()
+        };
+
+        const isWebSocketOpen = ws.current && ws.current.readyState === WebSocket.OPEN;
+
+        if (isWebSocketOpen) {
+            setMessages(prevMessages => [...prevMessages, optimisticMessage]);
+
             const payload = {
                 action: "send",
                 messageDTO: {
-                    content: newMessage,
-                    sender: userId
+                    content: messageContent,
+                    sender: userId,
+                    username: currentUsername
                 }
             };
             try {
+                console.log(JSON.stringify(payload));
                 ws.current.send(JSON.stringify(payload));
-                setNewMessage("");
+                console.log("Attempting to send message via WS:", payload);
             } catch (error) {
-                console.error("WebSocket send error:", error);
+                console.error("Error sending message via WebSocket:", error);
+                 setMessages(prevMessages =>
+                    prevMessages.map(msg =>
+                        msg.id === optimisticMessage.id ? { ...msg, text: 'сообщение не доставлено', status: 'failed' } : msg
+                    )
+                );
             }
         } else {
-            console.error("WebSocket is not connected or not ready.");
+            console.warn("WebSocket is not connected. Message marked as not delivered.");
+            const failedMessage = {
+                ...optimisticMessage,
+                text: 'сообщение не доставлено',
+                status: 'failed'
+            };
+             setMessages(prevMessages => [...prevMessages, failedMessage]);
         }
+
+        setNewMessage("");
     };
 
-    useEffect(() => { checkAuthStatus();
+    useEffect(() => {
+        checkAuthStatus();
     }, [checkAuthStatus]);
 
     useEffect(() => {
         if (isAuthenticated) {
             fetchMessages();
 
-            if (!ws.current) {
-                console.log(`Connecting WebSocket to ${wsUrl}...`);
-                ws.current = new WebSocket(wsUrl);
-
-                ws.current.onopen = () => {
-                    console.log("WebSocket Connected");
-                    setIsConnected(true);
-                };
-
-                ws.current.onclose = (event) => {
-                    console.log("WebSocket Disconnected:", event.reason, event.code);
-                    setIsConnected(false);
-                    ws.current = null;
-                };
-
-                ws.current.onerror = (error) => {
-                    console.error("WebSocket Error:", error);
-                };
-
-                ws.current.onmessage = (event) => {
-                    try {
-                        const receivedMessage = JSON.parse(event.data);
-                        console.log("Message received via WS:", receivedMessage);
-
-                        let formattedMessage;
-
-                        if (receivedMessage.action === "receive" && receivedMessage.messageDTO) {
-                            formattedMessage = {
-                                author: receivedMessage.messageDTO.sender,
-                                text: receivedMessage.messageDTO.content,
-                                id: receivedMessage.id || `msg-${Date.now()}-${Math.random()}`
-                            };
-                        } else if (receivedMessage.author && receivedMessage.text) {
-                            formattedMessage = {
-                                author: receivedMessage.author,
-                                text: receivedMessage.text,
-                                id: receivedMessage.id || `msg-${Date.now()}-${Math.random()}`
-                            };
-                        } else if (receivedMessage.content && receivedMessage.sender) {
-                            formattedMessage = {
-                                author: receivedMessage.sender,
-                                text: receivedMessage.content,
-                                id: receivedMessage.id || `msg-${Date.now()}-${Math.random()}`
-                            };
-                        }
-
-
-                        if (formattedMessage) {
-                            setMessages((prevMessages) => {
-                                if (formattedMessage.id && prevMessages.some(msg => msg.id === formattedMessage.id)) {
-                                    console.log("Ignoring duplicate message:", formattedMessage);
-                                    return prevMessages;
-                                }
-                                return [...prevMessages, formattedMessage];
-                            });
-                        } else {
-                            console.warn("Received unknown or unhandled message format via WS:", receivedMessage);
-                        }
-
-                    } catch (error) {
-                        console.error("Failed to parse incoming message or update state from WS:", error);
-                    }
-                };
+            if (ws.current) {
+                console.log("Closing existing WebSocket connection.");
+                ws.current.close();
+                ws.current = null;
             }
+
+            ws.current = new WebSocket(wsUrl);
+
+            ws.current.onopen = () => {
+                setIsConnected(true);
+                console.log("WebSocket connected");
+            };
+
+            ws.current.onclose = (event) => {
+                setIsConnected(false);
+                console.log("WebSocket disconnected", event);
+                ws.current = null;
+            };
+
+            ws.current.onerror = (error) => {
+                console.error("WebSocket error:", error);
+            };
+
+            ws.current.onmessage = (event) => {
+                try {
+                    const receivedData = JSON.parse(event.data);
+
+                    const messageData = receivedData.messageDTO || receivedData;
+
+                    if (messageData && messageData.content && messageData.sender) {
+                         setMessages(prevMessages => {
+                            const existingOptimisticIndex = prevMessages.findIndex(msg =>
+                                msg.isOptimistic &&
+                                msg.senderId === messageData.sender &&
+                                msg.text === messageData.content
+                            );
+
+                             const messageId = messageData.id || `ws-temp-${messageData.sender}-${Date.now()}-${Math.random()}`;
+
+                            const formattedMessage = {
+                                author: messageData.username || messageData.sender || 'Unknown',
+                                text: messageData.content,
+                                senderId: messageData.sender,
+                                id: messageId,
+                                status: 'delivered',
+                                timestamp: messageData.timestamp
+                            };
+
+                            if (existingOptimisticIndex > -1) {
+                                const newMessages = [...prevMessages];
+                                newMessages[existingOptimisticIndex] = formattedMessage;
+                                console.log("Replaced optimistic message:", formattedMessage);
+                                return newMessages;
+                            } else {
+                                if (prevMessages.some(msg => msg.id === formattedMessage.id)) {
+                                     console.log("Message with this ID already exists, skipping:", formattedMessage.id);
+                                     return prevMessages;
+                                }
+                                console.log("Adding new message:", formattedMessage);
+                                return [...prevMessages, formattedMessage];
+                            }
+                        });
+                    } else {
+                        console.warn("Received message in unexpected format or missing data (content or sender):", receivedData);
+                    }
+                } catch (error) {
+                    console.error("Error parsing or processing WebSocket message:", error);
+                }
+            };
         } else {
             if (ws.current) {
-                console.log("Closing WebSocket due to logout.");
+                console.log("Closing WebSocket connection (not authenticated).");
                 ws.current.close();
                 ws.current = null;
             }
@@ -223,21 +326,28 @@ const CombinedChatApp = () => {
 
         return () => {
             if (ws.current) {
-                console.log("Closing WebSocket on component unmount.");
+                 console.log("Cleaning up WebSocket connection");
                 ws.current.close();
                 ws.current = null;
             }
         };
-    }, [isAuthenticated, wsUrl, fetchMessages]);
+    }, [isAuthenticated, wsUrl, fetchMessages, myUsername]);
+
+    useEffect(() => {
+        if (messagesEndRef.current) {
+             messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
+        }
+    }, [messages]);
+
 
     if (isCheckingAuth) {
-        return <div className="Abel">Проверка авторизации...</div>;
+        return <div style={{ textAlign: 'center', paddingTop: '50px' }} className="Abel">Проверка авторизации...</div>;
     }
 
     if (!isAuthenticated) {
         return (
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: '50px', backgroundColor: '#f4f7f6', minHeight: '100vh' }}>
-                <div style={{ marginBottom: '40px', width: '100%', textAlign: 'center', borderBottom: '1px solid #ccc', paddingBottom: '20px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: '50px', minHeight: '100vh' }}>
+                <div style={{ marginBottom: '40px', padding: '30px', width: '100%', textAlign: 'center', borderBottom: '1px solid #ccc', paddingBottom: '20px' }}>
                     <span className="Abel" style={{ fontSize: '24px', color: "black" }}>🦄 Team Unicorns</span>
                 </div>
 
@@ -289,8 +399,9 @@ const CombinedChatApp = () => {
                         className="Abel"
                         onClick={handleLogin}
                         style={{
-                            width: 'calc((100% - 22px) / 2)',
-                            padding: '8px 12px',
+                            width: '50%',
+                            alignSelf: 'center',
+                            padding: '10px 15px',
                             backgroundColor: '#007bff',
                             color: 'white',
                             border: 'none',
@@ -309,44 +420,84 @@ const CombinedChatApp = () => {
         );
     }
 
+    const currentUserId = localStorage.getItem("user_id");
+
     return (
-        <div style={{ padding: "20px", maxWidth: "600px", margin: "auto" }}>
-            <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '20px' }}>
-                <span className="Abel" style={{ fontSize: '24px', fontWeight: 'bold', color: '#6200ea' }}>🦄 Team Unicorns Chat</span>
-            </div>
-            <div className="Abel" style={{ marginBottom: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span>Status: <span className="Abel" style={{ color: isConnected ? 'green' : 'red' }}>{isConnected ? 'Connected' : 'Disconnected'}</span></span>
-                <button className="Abel" onClick={handleLogout}>Logout</button>
-            </div>
+        <div className="app-container">
+            <p className="chat-title">🦄Team Unicorns</p>
+            <button onClick={handleLogout} style={{ position: 'absolute', top: '10px', right: '10px', padding: '5px 10px', cursor: 'pointer' }}>
+                Logout
+            </button>
+            <div className="chat-content-wrapper">
+                <div className="messages-container">
+                    {isLoadingMessages && <p>Загрузка сообщений...</p>}
+                    {!isLoadingMessages && messages.length === 0 && <p>Нет сообщений.</p>}
+                    {!isLoadingMessages && messages.map((msg, index) => {
+                        const isMyMessage = msg.senderId === currentUserId;
+                        const isFailedMessage = msg.status === 'failed';
 
-            <div style={{ border: "1px solid #ddd", padding: "10px", height: "300px", overflowY: "scroll", marginBottom: '10px' }}>
-                {isLoadingMessages && <p className="Abel">Загрузка сообщений...</p>}
-                {!isLoadingMessages && messages.length === 0 && <p className="Abel">Нет сообщений.</p>}
-                {!isLoadingMessages && messages.map((msg) => (
-                    <div key={msg.id} style={{ margin: "10px 0" }}>
-                        <strong className="Abel">{msg.author}:</strong> <span className="Abel">{msg.text}</span>
-                    </div>
-                ))}
-            </div>
+                        const previousMessage = messages[index - 1];
+                        const currentDate = msg.timestamp ? new Date(msg.timestamp).toDateString() : null;
+                        const previousDate = previousMessage && previousMessage.timestamp ? new Date(previousMessage.timestamp).toDateString() : null;
 
-            <div style={{ display: 'flex', marginTop: "20px" }}>
-                <input
-                    type="text"
-                    value={newMessage}
-                    onChange={(e) => setNewMessage(e.target.value)}
-                    onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
-                    placeholder="Введите сообщение"
-                    style={{ flexGrow: 1, padding: "10px", marginRight: "10px" }}
-                    disabled={!isConnected || isLoadingMessages}
-                />
-                <button
-                    className="Abel"
-                    onClick={handleSendMessage}
-                    style={{ padding: "10px" }}
-                    disabled={!isConnected || isLoadingMessages || !newMessage.trim()}
-                >
-                    Отправить
-                </button>
+                        const showDateSeparator = index === 0 || (currentDate && previousDate && currentDate !== previousDate);
+
+                        return (
+                            <React.Fragment key={msg.id}>
+                                {showDateSeparator && msg.timestamp && (
+                                    <div className="date-separator">
+                                        {formatDateSeparator(msg.timestamp)}
+                                    </div>
+                                )}
+                                <div
+                                    className="message-row"
+                                    style={{
+                                        justifyContent: isMyMessage ? 'flex-end' : 'flex-start',
+                                    }}
+                                >
+                                    <div
+                                        className={`message-bubble ${isMyMessage ? 'my-message' : 'other-message'} ${isFailedMessage ? 'failed-message' : ''}`}
+                                        data-id={msg.id}
+                                        data-sender-id={msg.senderId}
+                                    >
+                                        {!isMyMessage && msg.author && (
+                                            <div className="message-username">{msg.author}</div>
+                                        )}
+                                        <div className="message-content-wrapper">
+                                            <span style={{ fontStyle: isFailedMessage ? 'italic' : 'normal' }}>
+                                                {msg.text}
+                                            </span>
+                                            {msg.timestamp && (
+                                                <div className="message-timestamp">
+                                                    {formatTime(msg.timestamp)}
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+                            </React.Fragment>
+                        );
+                    })}
+                    <div ref={messagesEndRef} />
+                </div>
+                <div className="input-panel">
+                    <input
+                        type="text"
+                        value={newMessage}
+                        onChange={(e) => setNewMessage(e.target.value)}
+                        onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
+                        placeholder="Введите сообщение"
+                        className="message-input"
+                        disabled={!isAuthenticated || isLoadingMessages || !isConnected}
+                    />
+                    <button
+                        onClick={handleSendMessage}
+                        className="send-button"
+                        disabled={!isAuthenticated || isLoadingMessages || !newMessage.trim() || !isConnected}
+                    >
+                        Отправить
+                    </button>
+                </div>
             </div>
         </div>
     );
