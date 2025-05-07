@@ -422,82 +422,97 @@ const CombinedChatApp = () => {
 
     const currentUserId = localStorage.getItem("user_id");
 
+    const isSendDisabled = !isAuthenticated || isLoadingMessages || !newMessage.trim() || !isConnected;
+
+
     return (
         <div className="app-container">
-            <p className="chat-title">🦄Team Unicorns</p>
-            <button onClick={handleLogout} style={{ position: 'absolute', top: '10px', right: '10px', padding: '5px 10px', cursor: 'pointer' }}>
-                Logout
-            </button>
-            <div className="chat-content-wrapper">
-                <div className="messages-container">
-                    {isLoadingMessages && <p>Загрузка сообщений...</p>}
-                    {!isLoadingMessages && messages.length === 0 && <p>Нет сообщений.</p>}
-                    {!isLoadingMessages && messages.map((msg, index) => {
-                        const isMyMessage = msg.senderId === currentUserId;
-                        const isFailedMessage = msg.status === 'failed';
+            {/* Верхняя панель (зафиксирована) */}
+            <p className="chat-title">
+                🦄Team Unicorns
+                {/* Кнопка Logout теперь внутри заголовка */}
+                <button onClick={handleLogout} style={{ position: 'absolute', top: '50%', right: '10px', transform: 'translateY(-50%)', padding: '5px 10px', cursor: 'pointer' }}>
+                    Logout
+                </button>
+            </p>
 
-                        const previousMessage = messages[index - 1];
-                        const currentDate = msg.timestamp ? new Date(msg.timestamp).toDateString() : null;
-                        const previousDate = previousMessage && previousMessage.timestamp ? new Date(previousMessage.timestamp).toDateString() : null;
+            {/* Контейнер сообщений (прокручиваемый) */}
+            <div className="messages-container">
+                {isLoadingMessages && <p>Загрузка сообщений...</p>}
+                {!isLoadingMessages && messages.length === 0 && <p>Нет сообщений.</p>}
+                {!isLoadingMessages && messages.map((msg, index) => {
+                    const isMyMessage = msg.senderId === currentUserId;
+                    const isFailedMessage = msg.status === 'failed';
 
-                        const showDateSeparator = index === 0 || (currentDate && previousDate && currentDate !== previousDate);
+                    const previousMessage = messages[index - 1];
+                    const currentDate = msg.timestamp ? new Date(msg.timestamp).toDateString() : null;
+                    const previousDate = previousMessage && previousMessage.timestamp ? new Date(previousMessage.timestamp).toDateString() : null;
 
-                        return (
-                            <React.Fragment key={msg.id}>
-                                {showDateSeparator && msg.timestamp && (
-                                    <div className="date-separator">
-                                        {formatDateSeparator(msg.timestamp)}
-                                    </div>
-                                )}
+                    const showDateSeparator = index === 0 || (currentDate && previousDate && currentDate !== previousDate);
+
+                    return (
+                        <React.Fragment key={msg.id}>
+                            {showDateSeparator && msg.timestamp && (
+                                <div className="date-separator">
+                                    {formatDateSeparator(msg.timestamp)}
+                                </div>
+                            )}
+                            <div
+                                className="message-row"
+                                style={{
+                                    justifyContent: isMyMessage ? 'flex-end' : 'flex-start',
+                                }}
+                            >
                                 <div
-                                    className="message-row"
-                                    style={{
-                                        justifyContent: isMyMessage ? 'flex-end' : 'flex-start',
-                                    }}
+                                    className={`message-bubble ${isMyMessage ? 'my-message' : 'other-message'} ${isFailedMessage ? 'failed-message' : ''}`}
+                                    data-id={msg.id}
+                                    data-sender-id={msg.senderId}
                                 >
-                                    <div
-                                        className={`message-bubble ${isMyMessage ? 'my-message' : 'other-message'} ${isFailedMessage ? 'failed-message' : ''}`}
-                                        data-id={msg.id}
-                                        data-sender-id={msg.senderId}
-                                    >
-                                        {!isMyMessage && msg.author && (
-                                            <div className="message-username">{msg.author}</div>
+                                    {!isMyMessage && msg.author && (
+                                        <div className="message-username">{msg.author}</div>
+                                    )}
+                                    <div className="message-content-wrapper">
+                                        <span style={{ fontStyle: isFailedMessage ? 'italic' : 'normal' }}>
+                                            {msg.text}
+                                        </span>
+                                        {msg.timestamp && (
+                                            <div className="message-timestamp">
+                                                {formatTime(msg.timestamp)}
+                                            </div>
                                         )}
-                                        <div className="message-content-wrapper">
-                                            <span style={{ fontStyle: isFailedMessage ? 'italic' : 'normal' }}>
-                                                {msg.text}
-                                            </span>
-                                            {msg.timestamp && (
-                                                <div className="message-timestamp">
-                                                    {formatTime(msg.timestamp)}
-                                                </div>
-                                            )}
-                                        </div>
                                     </div>
                                 </div>
-                            </React.Fragment>
-                        );
-                    })}
-                    <div ref={messagesEndRef} />
-                </div>
-                <div className="input-panel">
-                    <input
-                        type="text"
-                        value={newMessage}
-                        onChange={(e) => setNewMessage(e.target.value)}
-                        onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
-                        placeholder="Введите сообщение"
-                        className="message-input"
-                        disabled={!isAuthenticated || isLoadingMessages || !isConnected}
-                    />
-                    <button
-                        onClick={handleSendMessage}
-                        className="send-button"
-                        disabled={!isAuthenticated || isLoadingMessages || !newMessage.trim() || !isConnected}
-                    >
-                        Отправить
-                    </button>
-                </div>
+                            </div>
+                        </React.Fragment>
+                    );
+                })}
+                <div ref={messagesEndRef} />
+            </div>
+
+            {/* Нижняя панель ввода (зафиксирована) */}
+            <div className="input-panel">
+                <input
+                    type="text"
+                    value={newMessage}
+                    onChange={(e) => setNewMessage(e.target.value)}
+                    onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
+                    placeholder="Start typing ..."
+                    className="message-input Abel"
+                    disabled={!isAuthenticated || isLoadingMessages || !isConnected}
+                />
+                <img
+                    src={require('../Assets/paper-airplane.png')}
+                    alt="Send"
+                    onClick={!isSendDisabled ? handleSendMessage : undefined}
+                    style={{
+                        width: '20px',
+                        height: '20px',
+                        cursor: !isSendDisabled ? 'pointer' : 'not-allowed',
+                        flexShrink: 0,
+                        opacity: isSendDisabled ? 0.5 : 1,
+                        pointerEvents: isSendDisabled ? 'none' : 'auto',
+                    }}
+                />
             </div>
         </div>
     );
